@@ -1,0 +1,40 @@
+version: 1
+name: codex-missing-input
+description: >
+  Intentionally references an input_files path that does NOT exist on disk.
+  The orchestrator will raise FileNotFoundError BEFORE the codex agent is
+  invoked (early failure — saves an LLM turn). The error block lands in the
+  agent's message list with the failing path called out, and the resume
+  hint shows you which step to fix.
+
+  Use this to verify the "missing input_file" path produces a clear error
+  surface — the file path is wrong in this yaml on purpose.
+
+runtime:
+  trace_root: /tmp/gatewright-runs
+  default_workspace: .
+
+agents:
+  worker:
+    provider: codex
+
+variables:
+  prompt_dir: examples/04-error-handling/prompts
+  output_dir: /tmp/tui-flow-codex-missing-input
+
+workflow:
+  - id: read-missing-input
+    type: step
+    agent: worker
+    context:
+      mode: create
+      agent_id: missing-input-worker
+    prompt_template: "{prompt_dir}/missing-input.md"
+    input_files:
+      # This path is intentionally wrong (does not exist on disk).
+      # The scheduler will raise FileNotFoundError before launching the
+      # codex turn, and the TUI will surface it on the worker agent.
+      - "/tmp/this-file-does-not-exist-on-purpose.md"
+    outputs:
+      required_files:
+        - "{output_dir}/done.md"

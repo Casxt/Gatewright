@@ -1,0 +1,43 @@
+version: 1
+name: codex-recoverable-failure
+description: >
+  Demonstrates the message-driven pause/error flow. The "flaky" step's prompt asks Codex
+  to perform a multi-file write but ALSO instructs it to abort the first
+  attempt half-way (simulating a network drop). When the orchestrator
+  detects missing outputs, the TUI appends an open pause/error message to
+  the agent's message list:
+    any normal input — sent to the same codex thread to continue the task
+    a / abort        — stops the workflow and shows a `--start-from` resume hint
+
+  Run with the TUI so the open message is visible. The codex thread stays
+  alive on the server across the next input turn — you'll see the second turn
+  pick up where the first one left off.
+
+runtime:
+  trace_root: /tmp/gatewright-runs
+  default_workspace: .
+
+agents:
+  worker:
+    provider: codex
+
+variables:
+  prompt_dir: examples/04-error-handling/prompts
+  output_dir: /tmp/tui-flow-codex-recoverable
+  part_a_file: "{output_dir}/part_a.md"
+  part_b_file: "{output_dir}/part_b.md"
+  part_c_file: "{output_dir}/part_c.md"
+
+workflow:
+  - id: flaky-write
+    type: step
+    agent: worker
+    context:
+      mode: reuse
+      agent_id: flaky-worker
+    prompt_template: "{prompt_dir}/recover-step.md"
+    outputs:
+      required_files:
+        - "{part_a_file}"
+        - "{part_b_file}"
+        - "{part_c_file}"

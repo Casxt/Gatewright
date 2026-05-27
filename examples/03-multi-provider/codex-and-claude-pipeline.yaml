@@ -1,0 +1,56 @@
+version: 1
+name: codex-and-claude-pipeline
+description: >
+  Two-step pipeline mixing providers in one workflow:
+    - Step 1: Codex generates a Python module that parses semantic versions.
+    - Step 2: Claude (separate thread, different provider) reviews the module
+      and writes a review report.
+
+  Useful pattern when you want different providers for different cognitive
+  tasks — e.g. Codex for code generation (good at tool use + file edits),
+  Claude for code review (strong at reasoning over existing code).
+
+  The two steps use `mode: create` (independent threads). Inputs are passed
+  by file path on disk — the second agent reads the generated module via
+  its own file tools, no inlining.
+
+runtime:
+  trace_root: /tmp/gatewright-runs
+  default_workspace: .
+
+agents:
+  generator:
+    provider: codex
+  reviewer:
+    provider: claude
+
+variables:
+  prompt_dir: examples/03-multi-provider/prompts
+  output_dir: /tmp/tui-flow-multi-provider
+  module_file: "{output_dir}/semver.py"
+  review_file: "{output_dir}/review.md"
+
+workflow:
+  - id: generate-code
+    type: step
+    agent: generator
+    context:
+      mode: create
+      agent_id: codex-generator
+    prompt_template: "{prompt_dir}/codex-generate.md"
+    outputs:
+      required_files:
+        - "{module_file}"
+
+  - id: review-code
+    type: step
+    agent: reviewer
+    context:
+      mode: create
+      agent_id: claude-reviewer
+    prompt_template: "{prompt_dir}/claude-review.md"
+    input_files:
+      - "{module_file}"
+    outputs:
+      required_files:
+        - "{review_file}"

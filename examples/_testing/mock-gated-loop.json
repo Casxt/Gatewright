@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "name": "mock-gated-loop",
+  "description": "Minimal workflow for testing Step, Loop, Parallel, and agent context tracking.",
+  "runtime": {
+    "trace_root": "/tmp/gatewright-runs",
+    "default_workspace": "."
+  },
+  "agents": {
+    "main": {"provider": "mock"},
+    "worker": {"provider": "mock"}
+  },
+  "variables": {
+    "prompt_dir": "examples/_testing/prompts"
+  },
+  "workflow": [
+    {
+      "id": "kickoff",
+      "type": "step",
+      "agent": "main",
+      "context": {"mode": "reuse", "agent_id": "main-agent"},
+      "prompt_template": "{prompt_dir}/kickoff.md"
+    },
+    {
+      "id": "research-loop",
+      "type": "loop",
+      "round_variable": "round",
+      "body": [
+        {
+          "id": "plan",
+          "type": "step",
+          "agent": "main",
+          "context": {"mode": "reuse", "agent_id": "main-agent"},
+          "prompt_template": "{prompt_dir}/plan.md"
+        },
+        {
+          "id": "collect",
+          "type": "parallel",
+          "max_concurrency": 2,
+          "children": [
+            {
+              "id": "collect-a",
+              "type": "step",
+              "agent": "worker",
+              "context": {
+                "mode": "fork_from_step",
+                "from_step": "plan",
+                "agent_id": "collect-a-round-{round}"
+              },
+              "prompt_template": "{prompt_dir}/collect-a.md"
+            },
+            {
+              "id": "collect-b",
+              "type": "step",
+              "agent": "worker",
+              "context": {
+                "mode": "fork_from_step",
+                "from_step": "plan",
+                "agent_id": "collect-b-round-{round}"
+              },
+              "prompt_template": "{prompt_dir}/collect-b.md"
+            }
+          ]
+        }
+      ],
+      "gate": {
+        "id": "gate",
+        "type": "step",
+        "agent": "main",
+        "context": {"mode": "reuse", "agent_id": "main-agent"},
+        "prompt_template": "{prompt_dir}/gate-exit.md",
+        "decision": {
+          "parser": "json",
+          "continue_when": {"path": "decision", "equals": "continue"},
+          "exit_when": {"path": "decision", "equals": "exit"}
+        }
+      }
+    }
+  ]
+}

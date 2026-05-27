@@ -1,0 +1,93 @@
+version: 1
+name: codex-parallel-fanout
+description: >
+  Coordinator dispatches three parallel research workers (all Codex). Each
+  worker forks from the coordinator's context (so they inherit the brief)
+  and writes its own output file. After fan-in, the coordinator reads all
+  three outputs and writes the synthesis.
+
+  Demonstrates:
+    - `parallel` node with `max_concurrency` and `fail_fast`
+    - `fork_from_step` to spin workers off the coordinator's thread
+    - input_files on the synthesis step listing all three worker outputs
+      (paths only, not inlined — workers' Markdown is read on demand)
+
+runtime:
+  trace_root: /tmp/gatewright-runs
+  default_workspace: .
+
+agents:
+  coordinator:
+    provider: codex
+  worker:
+    provider: codex
+
+variables:
+  prompt_dir: examples/02-loops-and-parallel/prompts
+  output_dir: /tmp/tui-flow-codex-parallel-fanout
+
+workflow:
+  - id: brief
+    type: step
+    agent: coordinator
+    context:
+      mode: reuse
+      agent_id: parallel-coordinator
+    prompt_template: "{prompt_dir}/parallel-coordinator.md"
+    outputs:
+      required_files:
+        - "{output_dir}/brief.md"
+
+  - id: research-fanout
+    type: parallel
+    max_concurrency: 3
+    failure_policy: fail_fast
+    children:
+      - id: research-perf
+        type: step
+        agent: worker
+        context:
+          mode: fork_from_step
+          from_step: brief
+          agent_id: research-perf
+        prompt_template: "{prompt_dir}/parallel-worker.md"
+        outputs:
+          required_files:
+            - "{output_dir}/research-perf.md"
+      - id: research-correctness
+        type: step
+        agent: worker
+        context:
+          mode: fork_from_step
+          from_step: brief
+          agent_id: research-correctness
+        prompt_template: "{prompt_dir}/parallel-worker.md"
+        outputs:
+          required_files:
+            - "{output_dir}/research-correctness.md"
+      - id: research-ergonomics
+        type: step
+        agent: worker
+        context:
+          mode: fork_from_step
+          from_step: brief
+          agent_id: research-ergonomics
+        prompt_template: "{prompt_dir}/parallel-worker.md"
+        outputs:
+          required_files:
+            - "{output_dir}/research-ergonomics.md"
+
+  - id: synthesize
+    type: step
+    agent: coordinator
+    context:
+      mode: reuse
+      agent_id: parallel-coordinator
+    prompt_template: "{prompt_dir}/parallel-synth.md"
+    input_files:
+      - "{output_dir}/research-perf.md"
+      - "{output_dir}/research-correctness.md"
+      - "{output_dir}/research-ergonomics.md"
+    outputs:
+      required_files:
+        - "{output_dir}/synthesis.md"

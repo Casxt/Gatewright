@@ -1,0 +1,48 @@
+version: 1
+name: codex-linear-pipeline
+description: >
+  Two-step linear pipeline backed by the real Codex provider. Each step writes
+  a file on disk; the second step lists the first step's file as an input so
+  the orchestrator validates it exists (the file path is encoded into the
+  prompt — Codex reads it on demand via its file tools, the content is NOT
+  inlined into the prompt). Reuses the same Codex thread across both steps
+  so the second turn has the first turn's history.
+
+runtime:
+  trace_root: /tmp/gatewright-runs
+  default_workspace: .
+
+agents:
+  writer:
+    provider: codex
+
+variables:
+  prompt_dir: examples/01-basic/prompts/codex-real
+  output_dir: /tmp/tui-flow-codex-linear
+  draft_file: "{output_dir}/draft.md"
+  final_file: "{output_dir}/final.md"
+
+workflow:
+  - id: write-draft
+    type: step
+    agent: writer
+    context:
+      mode: reuse
+      agent_id: codex-linear-writer
+    prompt_template: "{prompt_dir}/write_draft.md"
+    outputs:
+      required_files:
+        - "{draft_file}"
+
+  - id: write-final
+    type: step
+    agent: writer
+    context:
+      mode: reuse
+      agent_id: codex-linear-writer
+    prompt_template: "{prompt_dir}/write_final.md"
+    input_files:
+      - "{draft_file}"
+    outputs:
+      required_files:
+        - "{final_file}"

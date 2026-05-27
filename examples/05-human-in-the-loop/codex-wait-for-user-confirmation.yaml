@@ -1,0 +1,65 @@
+version: 1
+name: codex-wait-for-user-confirmation
+description: >
+  The agent itself pauses mid-step waiting for the user to complete an
+  external action (scan a QR code, solve a captcha, sign in elsewhere, fix
+  some file on disk, …). This is the pattern the xueqiu-opinion-collection
+  skill uses for WAF / login.
+
+  Mechanism:
+
+    1. The agent's prompt allows it to end its turn WITHOUT writing the
+       required output files when an external step is needed.
+    2. With required_files missing, the scheduler treats the step as
+       paused and appends an open pause message to the agent's message list.
+    3. The user performs the external action (in another terminal /
+       browser), comes back to the TUI, and types a short instruction such
+       as "done, continue".
+    4. That input is sent to the SAME codex thread (still alive on the server
+       side). The agent re-checks the external state, finishes the work,
+       writes the required files.
+    5. _check_outputs passes → step is marked completed → workflow
+       continues to the next step normally.
+
+  Concretely this demo "logs into" a fictional service by waiting for the
+  user to `touch {token_file}` from another terminal. Codex sees the file,
+  considers itself logged in, and writes a fake session summary.
+
+  How to run (live TUI strongly recommended — that is where the open pause
+  message appears):
+    python -m gatewright.orchestrator.runner \\
+      --live --auto-approve \\
+      .../05-human-in-the-loop/codex-wait-for-user-confirmation.yaml
+
+  In the TUI:
+    - On the first run, the token file does not exist; the step pauses
+      with an open pause message.
+    - In another terminal, run: `touch /tmp/tui-flow-confirm/session.token`
+    - Back in the TUI, type `done, continue`. The same codex thread resumes,
+      re-reads the file, and writes the session summary.
+
+runtime:
+  trace_root: /tmp/gatewright-runs
+  default_workspace: .
+
+agents:
+  collector:
+    provider: codex
+
+variables:
+  prompt_dir: examples/05-human-in-the-loop/prompts
+  output_dir: /tmp/tui-flow-confirm
+  token_file: "{output_dir}/session.token"
+  session_file: "{output_dir}/session_summary.md"
+
+workflow:
+  - id: await-login
+    type: step
+    agent: collector
+    context:
+      mode: reuse
+      agent_id: confirm-collector
+    prompt_template: "{prompt_dir}/await-login.md"
+    outputs:
+      required_files:
+        - "{session_file}"

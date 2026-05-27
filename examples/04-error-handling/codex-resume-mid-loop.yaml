@@ -1,0 +1,94 @@
+version: 1
+name: codex-resume-mid-loop
+description: >
+  Three-step body inside a loop, designed to demonstrate the nested
+  `--start-from <loop_id>/<step_id>` resume form.
+
+  First-time run (writes round 0 outputs, exits at gate):
+    runner.py codex-resume-mid-loop.yaml
+
+  Imagine step `summarize` failed in round 0. To resume from there WITHOUT
+  re-running `prepare` and `analyze`, run:
+    runner.py codex-resume-mid-loop.yaml \
+      --start-from refine-loop/summarize -- --var round=0
+
+  The orchestrator enters the loop at round 0, skips `prepare` and
+  `analyze` (their outputs are already on disk), runs `summarize` and
+  the gate, then proceeds with subsequent rounds (which run the FULL
+  body — the skip only applies to the entry iteration).
+
+runtime:
+  trace_root: /tmp/gatewright-runs
+  default_workspace: .
+
+agents:
+  worker:
+    provider: codex
+
+variables:
+  prompt_dir: examples/04-error-handling/prompts
+  output_dir: /tmp/tui-flow-codex-resume
+  round_dir: "{output_dir}/round-{round}"
+
+workflow:
+  - id: refine-loop
+    type: loop
+    round_variable: round
+    body:
+      - id: prepare
+        type: step
+        agent: worker
+        context:
+          mode: reuse
+          agent_id: "resume-worker-round-{round}"
+        prompt_template: "{prompt_dir}/resume-step.md"
+        outputs:
+          required_files:
+            - "{round_dir}/prepare.md"
+
+      - id: analyze
+        type: step
+        agent: worker
+        context:
+          mode: reuse
+          agent_id: "resume-worker-round-{round}"
+        prompt_template: "{prompt_dir}/resume-step.md"
+        input_files:
+          - "{round_dir}/prepare.md"
+        outputs:
+          required_files:
+            - "{round_dir}/analyze.md"
+
+      - id: summarize
+        type: step
+        agent: worker
+        context:
+          mode: reuse
+          agent_id: "resume-worker-round-{round}"
+        prompt_template: "{prompt_dir}/resume-step.md"
+        input_files:
+          - "{round_dir}/prepare.md"
+          - "{round_dir}/analyze.md"
+        outputs:
+          required_files:
+            - "{round_dir}/summary.md"
+
+    gate:
+      id: done
+      type: step
+      agent: worker
+      context:
+        mode: reuse
+        agent_id: "resume-worker-round-{round}"
+      prompt_template: "{prompt_dir}/resume-gate.md"
+      outputs:
+        required_files:
+          - "{round_dir}/gate.json"
+      decision:
+        parser: json
+        continue_when:
+          path: decision
+          equals: continue
+        exit_when:
+          path: decision
+          equals: exit

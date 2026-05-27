@@ -1,0 +1,63 @@
+version: 1
+name: codex-gated-loop
+description: >
+  Iterative refinement loop driven by a JSON quality gate. Each round writes
+  `{round_dir}/draft.md` and the gate decides `continue` or `exit`. Shows:
+    - lazy {round} variable expansion (round_dir is re-resolved each round)
+    - JSON gate decision parsing
+    - reuse-mode agent shared across body + gate, so the model has full
+      context when judging quality
+
+  Try this with `--var round=0` (fresh) or `--start-from codex-loop/draft
+  -- --var round=2` to resume mid-loop.
+
+runtime:
+  trace_root: /tmp/gatewright-runs
+  default_workspace: .
+
+agents:
+  refiner:
+    provider: codex
+
+variables:
+  prompt_dir: examples/02-loops-and-parallel/prompts
+  output_dir: /tmp/tui-flow-codex-gated-loop
+  round_dir: "{output_dir}/round-{round}"
+
+workflow:
+  - id: codex-loop
+    type: loop
+    round_variable: round
+    body:
+      - id: draft
+        type: step
+        agent: refiner
+        context:
+          mode: reuse
+          agent_id: "refiner-round-{round}"
+        prompt_template: "{prompt_dir}/loop-body.md"
+        outputs:
+          required_files:
+            - "{round_dir}/draft.md"
+
+    gate:
+      id: quality-gate
+      type: step
+      agent: refiner
+      context:
+        mode: reuse
+        agent_id: "refiner-round-{round}"
+      prompt_template: "{prompt_dir}/loop-gate.md"
+      input_files:
+        - "{round_dir}/draft.md"
+      outputs:
+        required_files:
+          - "{round_dir}/gate.json"
+      decision:
+        parser: json
+        continue_when:
+          path: decision
+          equals: continue
+        exit_when:
+          path: decision
+          equals: exit

@@ -1,0 +1,92 @@
+version: 1
+name: codex-plan-then-execute
+description: >
+  Plan -> review -> execute -> review -> verify, with explicit user checkpoints
+  between steps. The orchestrator does not auto-detect "should pause here";
+  pausing is opted-in by running with the `--step-confirm` flag (or by
+  toggling step-mode in the live TUI with Shift+Tab).
+
+  Each step writes a fresh artifact under {output_dir}. Between steps the
+  TUI prompts "start step {name}? Enter/yes to run, no to stop". The user
+  cat's the prior step's output from another terminal, eyeballs it, then
+  types yes to authorize the next step (or `no` to abort and walk away
+  without burning more codex turns on a wrong plan).
+
+  How to run:
+    # Live TUI, step mode (recommended — visible prompts):
+    python -m gatewright.orchestrator.runner \\
+      --live --auto-approve --step-confirm \\
+      .../05-human-in-the-loop/codex-plan-then-execute.yaml
+
+    # Headless (CLI prompts via stdin):
+    python -m gatewright.orchestrator.runner \\
+      --no-live --auto-approve --step-confirm \\
+      .../05-human-in-the-loop/codex-plan-then-execute.yaml
+
+  Without `--step-confirm` the workflow runs straight through (no pauses).
+
+runtime:
+  trace_root: /tmp/gatewright-runs
+  default_workspace: .
+
+agents:
+  assistant:
+    provider: codex
+
+variables:
+  prompt_dir: examples/05-human-in-the-loop/prompts
+  output_dir: /tmp/tui-flow-plan-execute
+  plan_file: "{output_dir}/proposed_plan.md"
+  script_file: "{output_dir}/csv_total.py"
+  verification_file: "{output_dir}/verification.md"
+
+workflow:
+  # Step 1 — Plan. Codex describes WHAT it will build, but does not write
+  # any code yet. The plan is the artifact the user reviews before
+  # authorizing step 2.
+  - id: plan
+    type: step
+    agent: assistant
+    context:
+      mode: reuse
+      agent_id: plan-execute-assistant
+    prompt_template: "{prompt_dir}/plan.md"
+    outputs:
+      required_files:
+        - "{plan_file}"
+
+  # Step 2 — Execute. The TUI pauses here in step mode; the user has a
+  # chance to `cat {plan_file}` and decide whether to proceed. On `yes`
+  # codex writes the actual script. The reuse-mode context means codex
+  # still has the plan in its thread when it starts coding.
+  - id: execute
+    type: step
+    agent: assistant
+    context:
+      mode: reuse
+      agent_id: plan-execute-assistant
+    prompt_template: "{prompt_dir}/execute.md"
+    input_files:
+      - "{plan_file}"
+    outputs:
+      required_files:
+        - "{script_file}"
+
+  # Step 3 — Verify. Pauses again so the user can inspect the script
+  # before authorizing codex to run it (codex's sandbox normally also
+  # gates command execution via the approval prompt, but step_confirm
+  # gives the user a coarser-grained "did the script look reasonable?"
+  # checkpoint before any of those approvals are even asked).
+  - id: verify
+    type: step
+    agent: assistant
+    context:
+      mode: reuse
+      agent_id: plan-execute-assistant
+    prompt_template: "{prompt_dir}/verify.md"
+    input_files:
+      - "{plan_file}"
+      - "{script_file}"
+    outputs:
+      required_files:
+        - "{verification_file}"

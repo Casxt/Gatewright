@@ -1,0 +1,31 @@
+version: 1
+name: codex-single-step
+description: >
+  The simplest possible Codex workflow: one step, one agent, one required
+  output file. Run this to confirm the orchestrator can spawn Codex, run a
+  single turn, and validate that the declared file landed on disk.
+
+runtime:
+  trace_root: /tmp/gatewright-runs
+  default_workspace: .
+
+agents:
+  writer:
+    provider: codex
+
+variables:
+  prompt_dir: examples/01-basic/prompts
+  output_dir: /tmp/tui-flow-codex-single
+  note_file: "{output_dir}/note.md"
+
+workflow:
+  - id: write-note
+    type: step
+    agent: writer
+    context:
+      mode: create
+      agent_id: single-step-writer
+    prompt_template: "{prompt_dir}/single-step.md"
+    outputs:
+      required_files:
+        - "{note_file}"

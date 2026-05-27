@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gatewright"
+version = "0.1.0"
+description = "Loop-gated orchestration for live agent threads."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "PyYAML>=6.0",
+    "textual>=0.86",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+]
+claude = [
+    "claude-agent-sdk",
+]
+
+[project.scripts]
+gatewright = "gatewright.orchestrator.runner:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

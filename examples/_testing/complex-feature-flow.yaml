@@ -1,0 +1,142 @@
+version: 1
+name: complex-feature-flow
+description: >
+  A richer mock workflow that exercises Step, Loop, Parallel, run_when,
+  required file checks, approval handling, queued user input, and context reuse/fork.
+
+runtime:
+  trace_root: /tmp/gatewright-runs
+  default_workspace: .
+
+agents:
+  main:
+    provider: mock
+  worker:
+    provider: mock
+  reviewer:
+    provider: mock
+
+variables:
+  prompt_dir: examples/_testing/prompts/complex
+  fixture_dir: examples/_testing/fixtures/complex
+  output_dir: "{fixture_dir}/outputs"
+  input_dir: "{fixture_dir}/inputs"
+
+workflow:
+  - id: kickoff
+    type: step
+    agent: main
+    context:
+      mode: reuse
+      agent_id: main-agent
+    prompt_template: "{prompt_dir}/kickoff.md"
+    input_files:
+      - "{input_dir}/brief.md"
+    outputs:
+      required_files:
+        - "{output_dir}/round-0/round_manifest.md"
+
+  - id: two-round-loop
+    type: loop
+    round_variable: round
+    body:
+      - id: plan
+        type: step
+        agent: main
+        context:
+          mode: reuse
+          agent_id: main-agent
+        prompt_template: "{prompt_dir}/plan.md"
+        outputs:
+          required_files:
+            - "{output_dir}/round-{round}/round_manifest.md"
+
+      - id: round0-only
+        type: step
+        run_when:
+          expression: "round == 0"
+        agent: worker
+        context:
+          mode: fork_from_step
+          from_step: plan
+          agent_id: round0-only-agent
+        prompt_template: "{prompt_dir}/round0_only.md"
+        outputs:
+          required_files:
+            - "{output_dir}/round-0/round0_only.md"
+
+      - id: fanout
+        type: parallel
+        max_concurrency: 2
+        failure_policy: fail_fast
+        children:
+          - id: collect-alpha
+            type: step
+            agent: worker
+            context:
+              mode: fork_from_step
+              from_step: plan
+              agent_id: collect-alpha-round-{round}
+            prompt_template: "{prompt_dir}/collect_alpha.md"
+            outputs:
+              required_files:
+                - "{output_dir}/round-{round}/collect_alpha.md"
+
+          - id: collect-beta-approval
+            type: step
+            agent: worker
+            context:
+              mode: fork_from_agent
+              from_agent: main-agent
+              agent_id: collect-beta-round-{round}
+            prompt_template: "{prompt_dir}/collect_beta_approval.md"
+            outputs:
+              required_files:
+                - "{output_dir}/round-{round}/collect_beta.md"
+
+      - id: round1-review
+        type: step
+        run_when:
+          expression: "round == 1"
+        agent: reviewer
+        context:
+          mode: fork_from_agent
+          from_agent: main-agent
+          agent_id: reviewer-round-{round}
+        prompt_template: "{prompt_dir}/round1_review.md"
+        outputs:
+          required_files:
+            - "{output_dir}/round-1/review.md"
+
+    gate:
+      id: gate
+      type: step
+      agent: main
+      context:
+        mode: reuse
+        agent_id: main-agent
+      prompt_template: "{prompt_dir}/gate-round-{round}.md"
+      outputs:
+        required_files:
+          - "{output_dir}/round-{round}/quality_gate.md"
+      decision:
+        parser: json
+        continue_when:
+          path: decision
+          equals: continue
+        exit_when:
+          path: decision
+          equals: exit
+
+  - id: final-summary
+    type: step
+    agent: main
+    context:
+      mode: reuse
+      agent_id: main-agent
+    prompt_template: "{prompt_dir}/final_summary.md"
+    input_files:
+      - "{output_dir}/round-1/review.md"
+    outputs:
+      required_files:
+        - "{output_dir}/round-1/final_summary.md"

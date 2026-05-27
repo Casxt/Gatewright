@@ -1,0 +1,32 @@
+version: 1
+name: claude-single-step
+description: >
+  Single-step workflow backed by the Claude Code SDK provider. Identical shape
+  to codex-single-step.yaml — the only meaningful change is `provider: claude`.
+  Use this when you need a quick smoke test that the Claude backend is wired
+  up correctly (the rest of the orchestrator surface is provider-agnostic).
+
+runtime:
+  trace_root: /tmp/gatewright-runs
+  default_workspace: .
+
+agents:
+  writer:
+    provider: claude
+
+variables:
+  prompt_dir: examples/01-basic/prompts
+  output_dir: /tmp/tui-flow-claude-single
+  note_file: "{output_dir}/note.md"
+
+workflow:
+  - id: write-note
+    type: step
+    agent: writer
+    context:
+      mode: create
+      agent_id: claude-single-writer
+    prompt_template: "{prompt_dir}/claude-single-step.md"
+    outputs:
+      required_files:
+        - "{note_file}"
