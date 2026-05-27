@@ -213,3 +213,30 @@ def test_queued_input_cancel_bindings_use_priority() -> None:
     keys = {b.key for b in bindings}
     assert {"escape", "up"} <= keys
     assert all(b.priority is True for b in bindings)
+
+
+def test_live_agent_states_include_open_loop_confirmation_without_real_agent() -> None:
+    state = AgentViewState(
+        agent_id="loop:bounded-loop",
+        provider="orchestrator",
+        status="needs_decision",
+        current_node="bounded-loop",
+    )
+    state.messages.append(
+        InteractionMessage(
+            id="m-loop",
+            agent_id="loop:bounded-loop",
+            node_key="bounded-loop",
+            kind="loop_limit",
+            text="max_loop_rounds reached",
+            input_mode="confirm",
+        )
+    )
+    states = {
+        "loop:bounded-loop": state,
+        "stale-agent": AgentViewState(agent_id="stale-agent", provider="mock", status="idle"),
+    }
+
+    live_states = _live_agent_states(states, [])
+
+    assert set(live_states) == {"loop:bounded-loop"}

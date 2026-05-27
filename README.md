@@ -110,8 +110,12 @@ and [docs/orchestrator-design.md](docs/orchestrator-design.md).
 ## Core Idea
 
 ```text
-loop body -> gate -> continue | exit | retry | fork
+loop body -> gate -> continue | exit | max_loop_rounds confirmation
 ```
+
+Each loop defaults to `max_loop_rounds: 5`. Set it on a loop node to cap the
+absolute round value; `0` skips the loop body and gate but still asks the
+operator to confirm before post-loop steps run.
 
 The project is deliberately file-backed: prompts, node states, run states, and
 required output checks live on disk so long workflows do not depend on a single

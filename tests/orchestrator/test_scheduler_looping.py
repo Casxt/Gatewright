@@ -546,3 +546,394 @@ def test_loop_uses_agent_backed_quality_gate(tmp_path: Path) -> None:
     assert [result.node_id for result in results] == ["body", "gate"]
     assert results[0].output_text == "round 0"
     assert results[-1].output_text == '{"decision":"exit","reason":"done"}'
+
+
+def test_loop_defaults_to_five_absolute_rounds_and_confirms_before_post_loop(tmp_path: Path) -> None:
+    write(tmp_path / "prompts/body.md", "body round={round}")
+    write(tmp_path / "prompts/gate.md", "gate round={round}")
+    write(tmp_path / "prompts/after.md", "after loop")
+
+    rounds_seen: list[int] = []
+    after_ran = False
+
+    class ContinueAgent:
+        provider = "mock"
+        context_id = "ctx-max-default"
+
+        async def run(self, request):
+            nonlocal after_ran
+            from gatewright.runtime import AgentEvent, EventType
+
+            if request.prompt.startswith("body"):
+                rounds_seen.append(int(request.prompt.rsplit("=", 1)[1]))
+                text = request.prompt
+            elif request.prompt.startswith("gate"):
+                text = '{"decision":"continue"}'
+            else:
+                after_ran = True
+                text = "after complete"
+            yield AgentEvent.now(
+                type=EventType.TEXT,
+                provider="mock",
+                context_id="ctx-max-default",
+                run_id="r",
+                payload={"text": text, "delta": False},
+            )
+
+    agent = ContinueAgent()
+    interactions: list[InteractionMessage] = []
+
+    async def interaction_handler(message: InteractionMessage) -> str:
+        interactions.append(message)
+        return "yes"
+
+    spec = workflow_from_dict(
+        base_spec(
+            tmp_path,
+            [
+                {
+                    "id": "bounded-loop",
+                    "type": "loop",
+                    "round_variable": "round",
+                    "body": [
+                        {
+                            "id": "body",
+                            "type": "step",
+                            "agent": "main",
+                            "context": {"mode": "reuse", "agent_id": "loop-agent"},
+                            "prompt_template": "prompts/body.md",
+                        }
+                    ],
+                    "gate": {
+                        "id": "gate",
+                        "type": "step",
+                        "agent": "main",
+                        "context": {"mode": "reuse", "agent_id": "loop-agent"},
+                        "prompt_template": "prompts/gate.md",
+                        "decision": {
+                            "parser": "json",
+                            "continue_when": {"path": "decision", "equals": "continue"},
+                            "exit_when": {"path": "decision", "equals": "exit"},
+                        },
+                    },
+                },
+                {
+                    "id": "after",
+                    "type": "step",
+                    "agent": "main",
+                    "context": {"mode": "reuse", "agent_id": "loop-agent"},
+                    "prompt_template": "prompts/after.md",
+                },
+            ],
+        )
+    )
+
+    class Runner(WorkflowRunner):
+        async def _select_agent(self, node):
+            self.agent_registry[self._agent_id(node)] = agent
+            return agent
+
+    runner = Runner(spec, workspace=tmp_path, step_interaction_handler=interaction_handler)
+    asyncio.run(runner.run())
+
+    assert rounds_seen == [0, 1, 2, 3, 4]
+    assert runner.variables["round"] == 5
+    assert after_ran is True
+    assert len(interactions) == 1
+    assert interactions[0].kind == "loop_limit"
+    assert interactions[0].input_mode == "confirm"
+    assert "max_loop_rounds=5" in interactions[0].text
+    assert "round=5" in interactions[0].text
+
+
+def test_loop_max_rounds_uses_absolute_resume_round(tmp_path: Path) -> None:
+    write(tmp_path / "prompts/body.md", "body round={round}")
+    write(tmp_path / "prompts/gate.md", "gate round={round}")
+
+    rounds_seen: list[int] = []
+
+    class ContinueAgent:
+        provider = "mock"
+        context_id = "ctx-absolute"
+
+        async def run(self, request):
+            from gatewright.runtime import AgentEvent, EventType
+
+            if request.prompt.startswith("body"):
+                rounds_seen.append(int(request.prompt.rsplit("=", 1)[1]))
+                text = request.prompt
+            else:
+                text = '{"decision":"continue"}'
+            yield AgentEvent.now(
+                type=EventType.TEXT,
+                provider="mock",
+                context_id="ctx-absolute",
+                run_id="r",
+                payload={"text": text, "delta": False},
+            )
+
+    agent = ContinueAgent()
+    confirmations: list[InteractionMessage] = []
+
+    async def interaction_handler(message: InteractionMessage) -> str:
+        confirmations.append(message)
+        return "continue"
+
+    spec = workflow_from_dict(
+        base_spec(
+            tmp_path,
+            [
+                {
+                    "id": "bounded-loop",
+                    "type": "loop",
+                    "round_variable": "round",
+                    "max_loop_rounds": 3,
+                    "body": [
+                        {
+                            "id": "body",
+                            "type": "step",
+                            "agent": "main",
+                            "context": {"mode": "reuse", "agent_id": "loop-agent"},
+                            "prompt_template": "prompts/body.md",
+                        }
+                    ],
+                    "gate": {
+                        "id": "gate",
+                        "type": "step",
+                        "agent": "main",
+                        "context": {"mode": "reuse", "agent_id": "loop-agent"},
+                        "prompt_template": "prompts/gate.md",
+                        "decision": {
+                            "parser": "json",
+                            "continue_when": {"path": "decision", "equals": "continue"},
+                        },
+                    },
+                }
+            ],
+        )
+    )
+
+    class Runner(WorkflowRunner):
+        async def _select_agent(self, node):
+            self.agent_registry[self._agent_id(node)] = agent
+            return agent
+
+    runner = Runner(
+        spec,
+        workspace=tmp_path,
+        variables={"round": "2"},
+        step_interaction_handler=interaction_handler,
+    )
+    asyncio.run(runner.run())
+
+    assert rounds_seen == [2]
+    assert runner.variables["round"] == 3
+    assert len(confirmations) == 1
+    assert "round=3" in confirmations[0].text
+
+
+def test_loop_max_rounds_zero_skips_loop_but_confirms(tmp_path: Path) -> None:
+    write(tmp_path / "prompts/body.md", "body")
+    write(tmp_path / "prompts/gate.md", "gate")
+    write(tmp_path / "prompts/after.md", "after loop")
+
+    loop_agent_calls = 0
+    after_ran = False
+
+    class Agent:
+        provider = "mock"
+        context_id = "ctx-zero"
+
+        async def run(self, request):
+            nonlocal loop_agent_calls, after_ran
+            from gatewright.runtime import AgentEvent, EventType
+
+            if request.prompt == "after loop":
+                after_ran = True
+                text = "after complete"
+            else:
+                loop_agent_calls += 1
+                text = '{"decision":"continue"}'
+            yield AgentEvent.now(
+                type=EventType.TEXT,
+                provider="mock",
+                context_id="ctx-zero",
+                run_id="r",
+                payload={"text": text, "delta": False},
+            )
+
+    agent = Agent()
+    confirmations: list[InteractionMessage] = []
+
+    async def interaction_handler(message: InteractionMessage) -> str:
+        confirmations.append(message)
+        return "yes"
+
+    spec = workflow_from_dict(
+        base_spec(
+            tmp_path,
+            [
+                {
+                    "id": "skip-loop",
+                    "type": "loop",
+                    "round_variable": "round",
+                    "max_loop_rounds": 0,
+                    "body": [
+                        {
+                            "id": "body",
+                            "type": "step",
+                            "agent": "main",
+                            "context": {"mode": "reuse", "agent_id": "loop-agent"},
+                            "prompt_template": "prompts/body.md",
+                        }
+                    ],
+                    "gate": {
+                        "id": "gate",
+                        "type": "step",
+                        "agent": "main",
+                        "context": {"mode": "reuse", "agent_id": "loop-agent"},
+                        "prompt_template": "prompts/gate.md",
+                        "decision": {
+                            "parser": "json",
+                            "continue_when": {"path": "decision", "equals": "continue"},
+                        },
+                    },
+                },
+                {
+                    "id": "after",
+                    "type": "step",
+                    "agent": "main",
+                    "context": {"mode": "reuse", "agent_id": "loop-agent"},
+                    "prompt_template": "prompts/after.md",
+                },
+            ],
+        )
+    )
+
+    class Runner(WorkflowRunner):
+        async def _select_agent(self, node):
+            self.agent_registry[self._agent_id(node)] = agent
+            return agent
+
+    runner = Runner(spec, workspace=tmp_path, step_interaction_handler=interaction_handler)
+    asyncio.run(runner.run())
+
+    assert loop_agent_calls == 0
+    assert after_ran is True
+    assert runner.variables["round"] == 0
+    assert len(confirmations) == 1
+    assert confirmations[0].agent_id == "loop:skip-loop"
+    assert "max_loop_rounds=0" in confirmations[0].text
+
+
+def test_loop_max_rounds_confirmation_abort_stops_before_post_loop(tmp_path: Path) -> None:
+    write(tmp_path / "prompts/body.md", "body")
+    write(tmp_path / "prompts/gate.md", "gate")
+    write(tmp_path / "prompts/after.md", "after loop")
+
+    after_ran = False
+
+    class Agent:
+        provider = "mock"
+        context_id = "ctx-abort-limit"
+
+        async def run(self, request):
+            nonlocal after_ran
+            from gatewright.runtime import AgentEvent, EventType
+
+            if request.prompt == "after loop":
+                after_ran = True
+            yield AgentEvent.now(
+                type=EventType.TEXT,
+                provider="mock",
+                context_id="ctx-abort-limit",
+                run_id="r",
+                payload={"text": '{"decision":"continue"}', "delta": False},
+            )
+
+    agent = Agent()
+
+    async def interaction_handler(message: InteractionMessage) -> str:  # noqa: ARG001
+        return "no"
+
+    spec = workflow_from_dict(
+        base_spec(
+            tmp_path,
+            [
+                {
+                    "id": "stop-loop",
+                    "type": "loop",
+                    "round_variable": "round",
+                    "max_loop_rounds": 0,
+                    "body": [
+                        {
+                            "id": "body",
+                            "type": "step",
+                            "agent": "main",
+                            "context": {"mode": "reuse", "agent_id": "loop-agent"},
+                            "prompt_template": "prompts/body.md",
+                        }
+                    ],
+                    "gate": {
+                        "id": "gate",
+                        "type": "step",
+                        "agent": "main",
+                        "context": {"mode": "reuse", "agent_id": "loop-agent"},
+                        "prompt_template": "prompts/gate.md",
+                        "decision": {
+                            "parser": "json",
+                            "continue_when": {"path": "decision", "equals": "continue"},
+                        },
+                    },
+                },
+                {
+                    "id": "after",
+                    "type": "step",
+                    "agent": "main",
+                    "context": {"mode": "reuse", "agent_id": "loop-agent"},
+                    "prompt_template": "prompts/after.md",
+                },
+            ],
+        )
+    )
+
+    class Runner(WorkflowRunner):
+        async def _select_agent(self, node):
+            self.agent_registry[self._agent_id(node)] = agent
+            return agent
+
+    runner = Runner(spec, workspace=tmp_path, step_interaction_handler=interaction_handler)
+    try:
+        asyncio.run(runner.run())
+    except WorkflowError as exc:
+        assert "max_loop_rounds=0" in str(exc)
+    else:
+        raise AssertionError("loop limit confirmation reject must stop workflow")
+
+    assert after_ran is False
+    assert runner.resume_hint == "--start-from stop-loop -- --var round=0"
+
+
+def test_loop_max_rounds_rejects_negative_value(tmp_path: Path) -> None:
+    spec = workflow_from_dict(
+        base_spec(
+            tmp_path,
+            [
+                {
+                    "id": "bad-loop",
+                    "type": "loop",
+                    "round_variable": "round",
+                    "max_loop_rounds": -1,
+                    "body": [],
+                    "gate": {"id": "gate", "type": "step"},
+                }
+            ],
+        )
+    )
+    runner = WorkflowRunner(spec, workspace=tmp_path)
+    try:
+        asyncio.run(runner.run())
+    except WorkflowError as exc:
+        assert "max_loop_rounds must be >= 0" in str(exc)
+    else:
+        raise AssertionError("negative max_loop_rounds must fail")

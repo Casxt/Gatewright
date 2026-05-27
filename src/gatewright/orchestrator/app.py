@@ -383,9 +383,12 @@ class OrchestratorTextualApp(App[None]):
         )
         input_widget = self.query_one("#operator-input", Input)
         if self._pending_interaction is not None:
-            input_widget.placeholder = (
-                "reply to continue this agent, or type a/abort to stop"
-            )
+            if self._pending_interaction.input_mode == "confirm":
+                input_widget.placeholder = "yes/continue to proceed, no/abort to stop"
+            else:
+                input_widget.placeholder = (
+                    "reply to continue this agent, or type a/abort to stop"
+                )
         elif self._pending_step_confirmation is not None:
             input_widget.placeholder = "start step? Enter/yes to run, no to stop"
         else:
@@ -501,6 +504,13 @@ def _help_renderable() -> Group:
             [
                 ("Enter", "Send the typed line to the same agent thread"),
                 ("a / abort", "Stop — a --start-from resume command appears below"),
+            ],
+        ),
+        (
+            "When a loop reaches max_loop_rounds",
+            [
+                ("yes / continue", "Proceed with the workflow steps after the loop"),
+                ("no / abort", "Stop before post-loop steps run"),
             ],
         ),
         (
@@ -655,7 +665,11 @@ def _live_agent_states(
     live_agent_ids: Iterable[str],
 ) -> dict[str, AgentViewState]:
     live_ids = set(live_agent_ids)
-    return {agent_id: state for agent_id, state in states.items() if agent_id in live_ids}
+    return {
+        agent_id: state
+        for agent_id, state in states.items()
+        if agent_id in live_ids or state.open_interaction() is not None
+    }
 
 
 def _agent_option_text(state: AgentViewState, selected_agent_id: str | None, animation_frame: int = 0) -> str:
@@ -760,8 +774,15 @@ def _status_line_renderable(
         return Text(f"mode {mode} | working{_dots(animation_frame)} {state.current_node or state.agent_id}{prompt} | {toggle}", style="dim")
     if state is not None and state.queued_input_tail:
         return Text(f"mode {mode} | queued input pending (Esc/↑ cancels) | {toggle}", style="dim")
-    if state is not None and state.open_interaction() is not None:
-        return Text(f"mode {mode} | open message: reply below, a/abort stops | {toggle}", style="dim")
+    if state is not None:
+        open_message = state.open_interaction()
+        if open_message is not None and open_message.input_mode == "confirm":
+            return Text(
+                f"mode {mode} | open confirmation: yes/continue proceeds, no/abort stops | {toggle}",
+                style="dim",
+            )
+        if open_message is not None:
+            return Text(f"mode {mode} | open message: reply below, a/abort stops | {toggle}", style="dim")
     return Text(f"mode {mode} | {toggle}", style="dim")
 
 

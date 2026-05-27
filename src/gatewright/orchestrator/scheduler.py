@@ -35,6 +35,7 @@ StepRecoveryHandler = Callable[[StepPlan, BaseException], Awaitable[str]]
 
 
 OUTPUT_TAIL_LIMIT = 400_000
+DEFAULT_MAX_LOOP_ROUNDS = 5
 
 
 DEFAULT_CONTINUE_PROMPT = (
@@ -682,10 +683,80 @@ class WorkflowRunner:
         if not accepted:
             raise WorkflowError(f"workflow stopped before step: {plan.node_key}")
 
+    def _loop_max_rounds(self, node: dict[str, Any]) -> int:
+        raw = node.get("max_loop_rounds", DEFAULT_MAX_LOOP_ROUNDS)
+        try:
+            max_loop_rounds = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise WorkflowError(f"max_loop_rounds must be an integer; got {raw!r}") from exc
+        if max_loop_rounds < 0:
+            raise WorkflowError(f"max_loop_rounds must be >= 0; got {max_loop_rounds}")
+        return max_loop_rounds
+
+    async def _confirm_loop_limit(
+        self,
+        *,
+        node_key: str,
+        round_var: str,
+        current_round: int,
+        max_loop_rounds: int,
+        agent_id: str | None,
+        provider: str | None,
+    ) -> None:
+        confirm_agent_id = agent_id or f"loop:{node_key}"
+        await self._set_agent_state(
+            confirm_agent_id,
+            provider=provider or "orchestrator",
+            current_node=node_key,
+            status="needs_decision",
+        )
+        text = (
+            f"Loop {node_key} reached max_loop_rounds={max_loop_rounds} "
+            f"at {round_var}={current_round}.\n\n"
+            "Gatewright will stop running more loop rounds now. "
+            "Confirm whether to continue with the workflow steps after this loop. "
+            "Reply yes/continue to proceed, or no/abort to stop here."
+        )
+        message = InteractionMessage(
+            id=f"interaction-{uuid4().hex[:12]}",
+            agent_id=confirm_agent_id,
+            node_key=node_key,
+            kind="loop_limit",
+            text=text,
+            input_mode="confirm",
+            abort_tokens=frozenset({"n", "no", "a", "abort", "stop", "cancel", "q", "quit"}),
+        )
+        await self._append_interaction_message(message)
+        try:
+            if self.step_interaction_handler is not None:
+                reply = await self.step_interaction_handler(message)
+            else:
+                reply = "abort"
+        except Exception:
+            reply = "abort"
+        accepted = str(reply).strip().lower() in {"y", "yes", "c", "continue", "proceed"}
+        message.result = str(reply)
+        message.state = "closed" if accepted else "aborted"
+        await self._emit_event({"kind": "interaction_state", "message": message})
+        if not accepted:
+            self.resume_hint = f"--start-from {node_key} -- --var {round_var}={current_round}"
+            await self._set_agent_state(confirm_agent_id, status="failed", current_node=node_key)
+            raise WorkflowError(
+                f"workflow stopped at {node_key}: {round_var}={current_round} "
+                f"reached max_loop_rounds={max_loop_rounds}"
+            )
+        await self._append_agent_output(
+            confirm_agent_id,
+            f"\n[confirmed] max_loop_rounds reached at {round_var}={current_round}; "
+            "continuing after loop\n",
+        )
+        await self._set_agent_state(confirm_agent_id, status="idle", current_node=node_key)
+
     async def _run_loop(self, node: dict[str, Any], parent_key: str) -> list[StepResult]:
         node_id = str(node["id"])
         node_key = f"{parent_key}/{node_id}".strip("/")
         round_var = str(node.get("round_variable", "round"))
+        max_loop_rounds = self._loop_max_rounds(node)
         self.variables.setdefault(round_var, 0)
         # Coerce to int so run_when expressions like `round > 0` work even when the
         # value came in as a string via --var on the CLI.
@@ -697,10 +768,45 @@ class WorkflowRunner:
             ) from exc
         results: list[StepResult] = []
         first_iteration = True
+        last_gate_agent_id: str | None = None
+        last_gate_provider: str | None = None
         while True:
             self._raise_if_cancelled()
             current_round = int(self.variables[round_var])
             self.variables[round_var] = current_round
+            if current_round >= max_loop_rounds:
+                self.store.write_node_state(
+                    node_key,
+                    {
+                        "node_id": node_id,
+                        "node_key": node_key,
+                        "status": "max_loop_rounds_reached",
+                        "round": current_round,
+                        "round_variable": round_var,
+                        "max_loop_rounds": max_loop_rounds,
+                    },
+                )
+                await self._confirm_loop_limit(
+                    node_key=node_key,
+                    round_var=round_var,
+                    current_round=current_round,
+                    max_loop_rounds=max_loop_rounds,
+                    agent_id=last_gate_agent_id,
+                    provider=last_gate_provider,
+                )
+                self.store.write_node_state(
+                    node_key,
+                    {
+                        "node_id": node_id,
+                        "node_key": node_key,
+                        "status": "completed",
+                        "round": current_round,
+                        "round_variable": round_var,
+                        "max_loop_rounds": max_loop_rounds,
+                        "exit_reason": "max_loop_rounds",
+                    },
+                )
+                break
             self.variables["previous_round"] = current_round - 1
             round_key = f"{node_key}/round-{current_round}"
             self.store.write_node_state(
@@ -739,6 +845,8 @@ class WorkflowRunner:
             gate = dict(node["gate"])
             gate_result = await self._run_step(gate, round_key)
             results.append(gate_result)
+            last_gate_agent_id = gate_result.agent_id
+            last_gate_provider = gate_result.provider
             decision = self._parse_gate_decision(gate, gate_result.output_text)
             self.store.write_node_state(
                 round_key,

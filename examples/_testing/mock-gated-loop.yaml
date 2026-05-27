@@ -27,6 +27,7 @@ workflow:
   - id: research-loop
     type: loop
     round_variable: round
+    max_loop_rounds: 5
     body:
       - id: plan
         type: step

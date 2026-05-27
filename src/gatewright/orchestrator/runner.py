@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .app import OrchestratorTextualApp
 from .scheduler import WorkflowRunner, approve_all
+from .tui import InteractionMessage
 from .workflow import StepPlan
 from .workflow import load_workflow
 
@@ -18,6 +19,16 @@ async def confirm_step_cli(plan: StepPlan) -> bool:
     except EOFError:
         return False
     return answer.strip().lower() not in {"n", "no", "stop", "cancel", "q", "quit"}
+
+
+async def interaction_cli(message: InteractionMessage) -> str:
+    if message.input_mode == "confirm":
+        print(message.text)
+        try:
+            return await asyncio.to_thread(input, "Continue after this loop? [y/N] ")
+        except EOFError:
+            return "abort"
+    return "abort"
 
 
 async def run_cli(args: argparse.Namespace) -> None:
@@ -33,6 +44,7 @@ async def run_cli(args: argparse.Namespace) -> None:
         decision_handler=approve_all if args.auto_approve else None,
         start_from=args.start_from,
         step_confirm_handler=confirm_step_cli if args.step_confirm and not live_enabled else None,
+        step_interaction_handler=interaction_cli if not live_enabled else None,
     )
     if live_enabled:
         await OrchestratorTextualApp(runner, workflow_name=spec.name, step_confirm=args.step_confirm).run_async()

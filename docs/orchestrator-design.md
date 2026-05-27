@@ -210,13 +210,17 @@ operator turn immediately using the existing live SDK `Agent`.
 `_run_loop(node, parent_key)`:
 
 1. Initialize `round_variable`, default `round`, to `0` if absent.
-2. Set `previous_round` to `round - 1`.
-3. Run each `body` child under node key `loop-id/round-N`.
-4. Run `gate` as a normal step.
-5. Parse the gate output JSON.
-6. If decision is `exit`, break.
-7. If decision is `continue`, increment `round` and repeat.
-8. Any other decision raises `WorkflowError`.
+2. Read `max_loop_rounds`, default `5`, as a non-negative absolute round cap.
+3. If `round >= max_loop_rounds`, stop before the body/gate and ask the
+   operator to confirm whether post-loop steps may run. `0` therefore skips
+   the loop while still requiring confirmation.
+4. Set `previous_round` to `round - 1`.
+5. Run each `body` child under node key `loop-id/round-N`.
+6. Run `gate` as a normal step.
+7. Parse the gate output JSON.
+8. If decision is `exit`, break.
+9. If decision is `continue`, increment `round` and repeat.
+10. Any other decision raises `WorkflowError`.
 
 The loop controller does not inspect domain files to decide exit. The gate is
 an agent step and the structured output is the control signal.

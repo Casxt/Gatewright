@@ -250,3 +250,28 @@ def test_workflow_renderable_shows_needs_decision_marker() -> None:
     text = console.export_text()
 
     assert "? gate" in text
+
+
+def test_status_line_shows_loop_limit_confirmation_prompt() -> None:
+    state = AgentViewState(
+        agent_id="loop:bounded-loop",
+        provider="orchestrator",
+        status="needs_decision",
+        current_node="bounded-loop",
+    )
+    state.messages.append(
+        InteractionMessage(
+            id="m-loop",
+            agent_id="loop:bounded-loop",
+            node_key="bounded-loop",
+            kind="loop_limit",
+            text="max_loop_rounds reached",
+            input_mode="confirm",
+        )
+    )
+
+    line = _status_line_renderable(state, None, step_mode=False, animation_frame=0)
+
+    assert "open confirmation" in line.plain
+    assert "yes/continue" in line.plain
+    assert "no/abort" in line.plain

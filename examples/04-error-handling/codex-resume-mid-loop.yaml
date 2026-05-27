@@ -34,6 +34,7 @@ workflow:
   - id: refine-loop
     type: loop
     round_variable: round
+    max_loop_rounds: 5
     body:
       - id: prepare
         type: step
