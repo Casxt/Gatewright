@@ -1018,16 +1018,18 @@ class WorkflowRunner:
     def _render_prompt(self, node: dict[str, Any]) -> str:
         prompt_path = self._workspace_path(str(node["prompt_template"]))
         prompt = expand(prompt_path.read_text(encoding="utf-8"), self.variables)
-        input_files = node.get("input_files") or []
-        if not input_files:
+        required_paths, optional_paths = self._input_file_paths(node)
+        if not required_paths and not optional_paths:
             return prompt
-        # Validate that every declared input exists on disk so misconfigured
-        # paths fail fast (same guarantee as the old inline behaviour) — but
-        # do NOT inline the file contents. Codex / Claude context windows are
-        # the bottleneck; agents should Read the files they actually need.
+        # Validate that every required input exists on disk so misconfigured
+        # paths fail fast (same guarantee as the old behaviour). Optional inputs
+        # are silently skipped when absent — they support per-round files that
+        # may not exist yet (e.g., the supplement collection summary in round 0).
+        # Do NOT inline file contents either way; Codex / Claude context windows
+        # are the bottleneck and agents should Read the files they actually need.
         missing: list[str] = []
         resolved: list[Path] = []
-        for raw_path in input_files:
+        for raw_path in required_paths:
             path = self._workspace_path(str(raw_path))
             if not path.exists():
                 missing.append(str(path))
@@ -1037,6 +1039,12 @@ class WorkflowRunner:
             raise FileNotFoundError(
                 "input_files declared but not found on disk: " + ", ".join(missing)
             )
+        for raw_path in optional_paths:
+            path = self._workspace_path(str(raw_path))
+            if path.exists():
+                resolved.append(path)
+        if not resolved:
+            return prompt
         lines = [
             prompt.rstrip(),
             "",
@@ -1047,6 +1055,33 @@ class WorkflowRunner:
         for path in resolved:
             lines.append(f"- {path}")
         return "\n".join(lines) + "\n"
+
+    def _input_file_paths(self, node: dict[str, Any]) -> tuple[list[str], list[str]]:
+        """Return (required, optional) input-file path lists for a step.
+
+        Accepts two shapes:
+        - List form (back-compat): ``input_files: [path, ...]`` → all required.
+        - Dict form (parallel to ``outputs``): ``input_files: {required_files: [...], optional_files: [...]}``.
+        """
+        raw = node.get("input_files")
+        if raw is None:
+            return [], []
+        if isinstance(raw, list):
+            return [str(p) for p in raw], []
+        if isinstance(raw, dict):
+            required = [str(p) for p in (raw.get("required_files") or [])]
+            optional = [str(p) for p in (raw.get("optional_files") or [])]
+            unknown = set(raw.keys()) - {"required_files", "optional_files"}
+            if unknown:
+                raise WorkflowError(
+                    "input_files dict supports only 'required_files' and "
+                    f"'optional_files'; got unknown keys: {sorted(unknown)}"
+                )
+            return required, optional
+        raise WorkflowError(
+            "input_files must be a list of paths or a dict with "
+            "'required_files' / 'optional_files'"
+        )
 
     def _check_outputs(self, node: dict[str, Any]) -> None:
         outputs = node.get("outputs") or {}

@@ -167,6 +167,182 @@ def test_missing_input_file_raises_before_agent_turn(tmp_path: Path) -> None:
     assert state.status == "failed"
     assert "[error]" in state.output_tail
 
+def test_input_files_dict_form_lists_required_and_optional_present(tmp_path: Path) -> None:
+    """input_files: {required_files, optional_files} — parallels outputs schema.
+    Both kinds of paths get listed in the rendered prompt when present on disk."""
+    write(tmp_path / "prompts/one.md", "do it")
+    write(tmp_path / "data/req.md", "REQ_INLINE_MARKER")
+    write(tmp_path / "data/opt.md", "OPT_INLINE_MARKER")
+    spec = workflow_from_dict(
+        base_spec(
+            tmp_path,
+            [
+                {
+                    "id": "one",
+                    "type": "step",
+                    "agent": "main",
+                    "context": {"mode": "reuse", "agent_id": "main-agent"},
+                    "prompt_template": "prompts/one.md",
+                    "input_files": {
+                        "required_files": [str(tmp_path / "data/req.md")],
+                        "optional_files": [str(tmp_path / "data/opt.md")],
+                    },
+                }
+            ],
+        )
+    )
+
+    runner = WorkflowRunner(spec, workspace=tmp_path)
+    results = asyncio.run(runner.run())
+
+    prompt_text = results[0].output_text
+    assert "do it" in prompt_text
+    assert "# Input Files" in prompt_text
+    assert "req.md" in prompt_text
+    assert "opt.md" in prompt_text
+    # File contents must still NOT be inlined.
+    assert "REQ_INLINE_MARKER" not in prompt_text
+    assert "OPT_INLINE_MARKER" not in prompt_text
+
+
+def test_input_files_optional_absent_is_silently_skipped(tmp_path: Path) -> None:
+    """An optional input that does not exist on disk must be silently skipped,
+    NOT raise FileNotFoundError. This is the round-0 use case where the
+    supplement-collection summary does not yet exist."""
+    write(tmp_path / "prompts/one.md", "do it")
+    write(tmp_path / "data/req.md", "real")
+    spec = workflow_from_dict(
+        base_spec(
+            tmp_path,
+            [
+                {
+                    "id": "one",
+                    "type": "step",
+                    "agent": "main",
+                    "context": {"mode": "reuse", "agent_id": "main-agent"},
+                    "prompt_template": "prompts/one.md",
+                    "input_files": {
+                        "required_files": [str(tmp_path / "data/req.md")],
+                        "optional_files": [
+                            str(tmp_path / "data/does_not_exist.md"),
+                            str(tmp_path / "data/also_missing.md"),
+                        ],
+                    },
+                }
+            ],
+        )
+    )
+
+    runner = WorkflowRunner(spec, workspace=tmp_path)
+    # Must NOT raise — optional missing is fine.
+    results = asyncio.run(runner.run())
+
+    prompt_text = results[0].output_text
+    assert "req.md" in prompt_text
+    assert "does_not_exist.md" not in prompt_text
+    assert "also_missing.md" not in prompt_text
+
+
+def test_input_files_dict_required_missing_still_raises(tmp_path: Path) -> None:
+    """In dict form, a missing required_file must still raise FileNotFoundError —
+    optional semantics must not leak into the required list."""
+    write(tmp_path / "prompts/one.md", "go")
+    spec = workflow_from_dict(
+        base_spec(
+            tmp_path,
+            [
+                {
+                    "id": "one",
+                    "type": "step",
+                    "agent": "main",
+                    "context": {"mode": "reuse", "agent_id": "main-agent"},
+                    "prompt_template": "prompts/one.md",
+                    "input_files": {
+                        "required_files": [str(tmp_path / "data/missing_req.md")],
+                        "optional_files": [],
+                    },
+                }
+            ],
+        )
+    )
+
+    runner = WorkflowRunner(spec, workspace=tmp_path)
+    try:
+        asyncio.run(runner.run())
+    except FileNotFoundError as exc:
+        assert "missing_req.md" in str(exc)
+    else:
+        raise AssertionError("missing required input must raise FileNotFoundError")
+
+
+def test_input_files_optional_only_renders_input_section(tmp_path: Path) -> None:
+    """A step with only optional_files (no required) should still render the
+    Input Files section when any optional file is present; if none are present
+    the prompt should pass through unchanged."""
+    write(tmp_path / "prompts/one.md", "go")
+    write(tmp_path / "data/opt_present.md", "x")
+    spec = workflow_from_dict(
+        base_spec(
+            tmp_path,
+            [
+                {
+                    "id": "one",
+                    "type": "step",
+                    "agent": "main",
+                    "context": {"mode": "reuse", "agent_id": "main-agent"},
+                    "prompt_template": "prompts/one.md",
+                    "input_files": {
+                        "optional_files": [
+                            str(tmp_path / "data/opt_present.md"),
+                            str(tmp_path / "data/opt_missing.md"),
+                        ],
+                    },
+                }
+            ],
+        )
+    )
+
+    runner = WorkflowRunner(spec, workspace=tmp_path)
+    results = asyncio.run(runner.run())
+    prompt_text = results[0].output_text
+    assert "# Input Files" in prompt_text
+    assert "opt_present.md" in prompt_text
+    assert "opt_missing.md" not in prompt_text
+
+
+def test_input_files_dict_unknown_key_raises_workflow_error(tmp_path: Path) -> None:
+    """input_files dict only supports 'required_files' / 'optional_files'.
+    A typo like 'optional_file' (singular) or 'inputs' must fail loudly."""
+    write(tmp_path / "prompts/one.md", "go")
+    spec = workflow_from_dict(
+        base_spec(
+            tmp_path,
+            [
+                {
+                    "id": "one",
+                    "type": "step",
+                    "agent": "main",
+                    "context": {"mode": "reuse", "agent_id": "main-agent"},
+                    "prompt_template": "prompts/one.md",
+                    "input_files": {
+                        "required_files": [],
+                        "extras": ["nope"],
+                    },
+                }
+            ],
+        )
+    )
+
+    runner = WorkflowRunner(spec, workspace=tmp_path)
+    raised: Exception | None = None
+    try:
+        asyncio.run(runner.run())
+    except Exception as exc:
+        raised = exc
+    assert raised is not None
+    assert "input_files dict" in str(raised) and "extras" in str(raised)
+
+
 def test_agent_failure_is_not_masked_by_missing_required_files(tmp_path: Path) -> None:
     """Regression: when the agent itself fails (e.g. Codex
     contextWindowExceeded) the step's required output files are guaranteed
